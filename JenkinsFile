@@ -4,6 +4,11 @@ pipeline{
        maven 'mymaven'
        jdk 'JDK11'
    }
+    environment {
+      AWS_REGION = 'us-east-2'
+      AWS_DEFAULT_REGION = 'us-east-2'
+
+  }
   stages {
     stage('Build'){
        steps {
@@ -17,6 +22,30 @@ pipeline{
         sh 'mvn test'
       }
       }
+      stage('sonar-analysis')
+      {
+        steps {
+                withSonarQubeEnv('mysonar') {
+                 
+                        sh 'mvn sonar:sonar'
+                    
+                }
+            }
+      }
+      stage('SonarQube Quality Gate') { 
+            steps{
+              sleep(60)
+                timeout(time: 1, unit: 'HOURS') { 
+                    script{
+                        def qg = waitForQualityGate() 
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                         }
+                    }
+                    
+                }
+            }
+        }
      stage('collect artifact'){
      steps{
      archiveArtifacts artifacts: 'target/*.jar', followSymlinks: false
@@ -36,18 +65,55 @@ pipeline{
             }
          ]
     }''',
- 
-    // Optional - Associate the uploaded files with the following custom build name and build number,
-    // as build artifacts.
-    // If not set, the files will be associated with the default build name and build number (i.e the
-    // the Jenkins job name and number).
-    buildName: 'holyFrog',
-    buildNumber: '42'
+
 )
      }}
+     stage('download from artifactory')
+         {
+            steps{
+     
+                rtDownload (
+                    serverId: 'artifactory-server',
+                    spec: '''{
+                    "files": [
+                         {
+                             "pattern": "art-doc-dev-loc/",
+                             "target": ""
+                        }
+                     ]
+                }''',
+ 
+)
+     }}
+     stage('upload to s3')
+     {
+         steps{
+             withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: '48ef093d-f474-480b-8514-4c51231f0f60', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+            s3Upload(pathStyleAccessEnabled: true, payloadSigningEnabled: true,file:'TeamManagement-0.0.1-SNAPSHOT.jar', bucket:'cloud-945742669624-bucket', path:'var/jenkins_home/workspace/artifactory-pipeline/target/TeamManagement-0.0.1-SNAPSHOT.jar')
+
+}
+         }
+     }
+
+     stage("deploy to ec2"){
+       steps{
+            sshagent(['fb6287dd-0b69-406a-88b3-16309ea4d52a']){
+                    sh 'scp -r /var/jenkins_home/workspace/artifactory-pipeline/target/*.jar ubuntu@52.14.63.252:/home/ubuntu/artifacts'
+        }
+       }
+     }
        
       
   
   }
+  post {
+      
+        failure {
+            echo 'I failed :('
+              mail to: 'kunagg25@gmail.com',
+             subject: "Failed Pipeline: ${currentBuild.fullDisplayName}",
+             body: "Something is wrong with ${env.BUILD_URL}"
+        }
+        
+    }
   }
-
